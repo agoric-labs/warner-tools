@@ -1,0 +1,29 @@
+#!/usr/bin/env python3
+
+import sys
+import requests
+
+CONFIG = """\
+graph_title ag0 block height
+graph_vlabel block height
+local_height.label Follower Block Height
+local_height.draw LINE2
+local_height.type GAUGE
+chain_height.label Chain Block Height
+chain_height.draw LINE1
+chain_height.type GAUGE
+"""
+
+if len(sys.argv) > 1 and sys.argv[1] == "config":
+    print(CONFIG.rstrip())
+    sys.exit(0)
+
+# ag0 status | jq -r .SyncInfo.latest_block_height
+block_height = int(requests.get("http://localhost:26657/status", headers={"accept": "application/json"}).json()["result"]["sync_info"]["latest_block_height"])
+
+chain_block_height = int(requests.get("https://agoric-rpc.stakely.io/status", headers={"accept": "application/json"}).json()["result"]["sync_info"]["latest_block_height"])
+
+
+
+print("local_height.value", block_height)
+print("chain_height.value", chain_block_height)

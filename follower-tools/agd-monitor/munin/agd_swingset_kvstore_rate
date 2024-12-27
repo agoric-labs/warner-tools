@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+
+import sys, json, requests
+
+CONFIG = '''\
+graph_title agd swingset kvstore growth
+graph_vlabel bytes/s
+swingset_kvstore_size.label Swingset KVStore Growth Rate
+swingset_kvstore_size.draw LINE2
+swingset_kvstore_size.type DERIVE
+swingset_kvstore_size.min 0
+'''
+
+if len(sys.argv) > 1 and sys.argv[1] == 'config':
+    print(CONFIG.rstrip())
+    sys.exit(0)
+
+r = requests.get('http://localhost:30003/data')
+data = json.loads(r.content)
+print('swingset_kvstore_size.value', data['swingset']['kv']['size'])

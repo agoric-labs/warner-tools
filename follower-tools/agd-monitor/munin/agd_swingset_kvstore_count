@@ -1,0 +1,19 @@
+#!/usr/bin/env python3
+
+import sys, json, requests
+
+CONFIG = '''\
+graph_title agd swingset kvstore count
+graph_vlabel keys
+swingset_kvstore_count.label Swingset KVStore Count
+swingset_kvstore_count.draw LINE2
+swingset_kvstore_count.type GAUGE
+'''
+
+if len(sys.argv) > 1 and sys.argv[1] == 'config':
+    print(CONFIG.rstrip())
+    sys.exit(0)
+
+r = requests.get('http://localhost:30003/data')
+data = json.loads(r.content)
+print('swingset_kvstore_count.value', data['swingset']['kv']['entries'])

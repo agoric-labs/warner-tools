@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+
+import sys, json, requests
+
+CONFIG = '''\
+graph_title agd swingset state size (pieces)
+graph_vlabel bytes
+swingset_size_xsnap.label xsnap
+swingset_size_xsnap.draw LINE2
+swingset_size_xsnap.type GAUGE
+swingset_size_bundles.label bundles
+swingset_size_bundles.draw LINE2
+swingset_size_bundles.type GAUGE
+swingset_size_kvstore.label kvstore
+swingset_size_kvstore.draw LINE2
+swingset_size_kvstore.type GAUGE
+swingset_size_flight_recorder.label flight_recorder
+swingset_size_flight_recorder.draw LINE2
+swingset_size_flight_recorder.type GAUGE
+'''
+
+if len(sys.argv) > 1 and sys.argv[1] == 'config':
+    print(CONFIG.rstrip())
+    sys.exit(0)
+
+r = requests.get('http://localhost:30003/data')
+data = json.loads(r.content)
+print('swingset_size_xsnap.value', data['swingset']['snapshot']['size'])
+print('swingset_size_bundles.value', data['swingset']['bundle']['size'])
+print('swingset_size_kvstore.value', data['swingset']['kv']['size'])
+print('swingset_size_flight_recorder.value', data['swingset']['flightrecorder'])
+

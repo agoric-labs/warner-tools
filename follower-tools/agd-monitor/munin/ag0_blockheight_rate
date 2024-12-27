@@ -1,0 +1,24 @@
+#!/usr/bin/env python3
+
+import sys
+import requests
+
+CONFIG = """\
+graph_title ag0 block rate
+graph_vlabel seconds per block
+height.label Block Rate
+height.draw LINE1
+height.type DERIVE
+height.min 0
+height.cdef 1,height,/
+"""
+
+if len(sys.argv) > 1 and sys.argv[1] == "config":
+    print(CONFIG.rstrip())
+    sys.exit(0)
+
+# ag0 status | jq -r .SyncInfo.latest_block_height
+block_height = int(requests.get("http://localhost:26657/status", headers={"accept": "application/json"}).json()["result"]["sync_info"]["latest_block_height"])
+
+print("height.value", block_height)
+

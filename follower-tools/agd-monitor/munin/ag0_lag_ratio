@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+
+import sys
+import requests
+from datetime import datetime
+
+CONFIG = """\
+graph_title ag0 lag ratio
+graph_vlabel seconds per second
+lag.label Lag Ratio
+lag.draw LINE1
+lag.type DERIVE
+"""
+
+if len(sys.argv) > 1 and sys.argv[1] == "config":
+    print(CONFIG.rstrip())
+    sys.exit(0)
+
+# ag0 status | jq -r .SyncInfo.latest_block_time
+latest_time_s = requests.get("http://localhost:26657/status", headers={"accept": "application/json"}).json()["result"]["sync_info"]["latest_block_time"]
+tail = len(latest_time_s) - latest_time_s.rindex(".")
+latest_dt = datetime.fromisoformat(latest_time_s[:-(tail-4)])
+now = datetime.now()
+lag = (now - latest_dt).total_seconds()
+
+print("lag.value", -lag)
+

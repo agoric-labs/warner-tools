@@ -33,7 +33,7 @@ database copies.
   temporary file, runs the other tools against that copy, then cleans up
   at the end. Some of the results are saved to files, some are only
   emitted by the stdout of process.sh.
-  
+
 * `size-report.py`: this measures coarse information about the database:
   number of transcript spans and entries, total bytes consumed by
   transcript data, and similar numbers for the kvStore, bundleStore, and
@@ -41,7 +41,7 @@ database copies.
   growth rate over time) was due to the different components. It
   generated `size-full.json` with the counts for the full DB, and
   `size-pruned.json` for the pruned DB (see next item).
-  
+
 * `prune-transcripts.js` (and -2 and -3): before run-61, my follower's
   database contained complete transcripts since the Vaults launch in its
   `transcriptStore` table. This resulted in a swingstore.sqlite DB file
@@ -55,7 +55,7 @@ database copies.
   and only copying over the subset of data that we really needed. For
   run-61 I used `prune-transcripts-3.js` to make a new pruned DB, and
   moved it into place. That run also started with a swingstore
-  configuration which offloaded old spans to new files, 
+  configuration which offloaded old spans to new files,
   `[swingset] vat-transcript-retention = "operational"`, plus
   `vat-transcript-archive-dir=`, and these offloaded files were archived
   into `old-transcripts.tar.gz`), so pruning became unnecessary. Runs
@@ -91,7 +91,7 @@ database copies.
   exited, and upgrade-18 will install new price feeds that don't retain
   QuotePayments in a RecoverySet, so these counts are not as interesting
   to track as they once were.
-  
+
 * `all-kv.txt.gz`: the processing tool also dumped the entire kvStore
   table with a simple SQLite command. The result is ambiguous
   (/usr/bin/sqlite3 defaults to a pipe separator, but some of our keys
@@ -105,10 +105,31 @@ database copies.
   (liveslots) bundles used by the vat, the vat source bundleID (which is
   some version of ZCF for all contract vats), the contract bundle ID
   (for contract vats), etc. Adding `--as-json` to the end results in a
-  JSON-formatted report, rather than a human-readable text report. 
+  JSON-formatted report, rather than a human-readable text report.
 
 * `vat-map-delta.js`: this takes a pair of JSON-formatted vat maps, and
   reports on the significant differences between them. I ran this
   manually to see which vats had been upgraded, and to confirm they were
   using the expected bundleIDs.
+
+* `monitor-slog-block-time.js`: this is a modified copy of the script
+  that lives in packages/SwingSet/misc-tools/ , which I run on my
+  follower. The uploaded data includes a `monitor-run-NN.out.gz` file
+  with its output. It records one line per block with a summary of
+  timing and how much work was done. The output also includes a count of
+  signatures (useful to gauge how many followers were unable to keep up)
+  and an identifier of the block proposer.
+
+* `extract-non-empty-blocks.py`: given a slogfile, write out separate
+  per-block files for all non-empty blocks
+
+
+The `agd-monitor/` directory contains a daemon which periodically
+measures the size of the follower's data (swingstore DB, cosmos DBs) and
+records the result in a SQLite database. The daemon also exposes the
+recent values over HTTP, to a set of munin plugins which can then graph
+the sizes over time. I had problems with DB load once the swingstore got
+too large, so I disabled some of the measurements, however with proper
+use of a readonly DB connection it should be possible to perform these
+measurements without disrupting normal follower activities.
 
