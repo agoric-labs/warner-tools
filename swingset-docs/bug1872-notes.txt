@@ -1,0 +1,175 @@
+My current design has the following lifecycle for an import/export and the things which reference it:
+
+![GC lifecycle](https://user-images.githubusercontent.com/27146/97645894-5f412780-1a0b-11eb-9240-2e48bc7f7cc8.png)
+
+We start with a Presence (an "import") in vat A, which is kept alive by virtue of being reachable from some export of vat A (perhaps the root object, perhaps some result Promise). This reachability can only change as a result of some delivery to vat A: either a message or resolution (`dispatch.deliver`, `dispatch.notifyResolveToData`, etc) which causes some user-level code to do something which drops a reference, or a `dispatch.decExport` which causes liveslots to drop a reference in the export table. Therefore the import of vat A can only become unreachable during a delivery to vat A.
+
+JavaScript's uses a mark-and-sweep GC, not a refcount-plus-sweep system, which means the engine doesn't notice the object is unreachable (it doesn't "collect" the object) until a GC sweep is performed. This can happen at entirely arbitrary times, usually in response to memory pressure. Both V8 (Node.js) and XS have facilities to force a GC sweep, but these are only meant to be used for diagnostics (usually to make performance test results more consistent). GC will happen when the engine needs to allocate a new object and there is not enough memory available in the free pool: if GC fails to free up enough memory, more will be requested from the operating system.
+
+It is important to note that vat-A's import might be collected during a delivery to vat-B, or during internal kernel activity that doesn't involve any particular vat. To avoid the confusion this would cause, JavaScript's `FinalizationRegistry` does not invoke the finalizer callback right away: it queues it until later.
+
+V8 appears to process the finalizer queue at the same time it services the IO/Timer queue, which means they won't run until the Promise (turn) queue is empty. The behavior of XS depends upon the host application, but it certainly won't be called until the next turn boundary.
+
+The finalizer callback (in liveslots, attached to the registry it uses to track `Presences` going away) invokes a function currently named `vatDecref` (but which should probably be renamed to `vatDecImport`). This is provided by the kernel via the VatManager. When invoked, it pushes the `{ vatID, vref, count }` triple onto the "decImport queue". This queue is ephemeral, because it might be modified in the middle of a delivery to e.g. vat-A, but it contains decImports from all vats, not just vat-A. If the delivery to vat-A were abandoned for whatever reason, and its DB changes rolled back, we must not forget about the decImports from other vats.
+
+Once the current delivery is complete and its state changes committed to the DB (or abandoned), the kernel can either move on to the next delivery on the run queue, or it can take time to process any queued decImports. I'm inclined to think the kernel should process all decImports before going to the next delivery, but there are probably performance arguments for either way (and these arguments probably mirror the refcount-vs-mark+sweep tradeoffs).
+
+When the kernel elects to process queued decImports, it does so between deliveries, so it knows that no Presences are becoming unreachable while processing is underway. Note that finalizers might still run between turns, so processing must not assume the `decImport` queue remains untouched across turn boundaries.
+
+The kernel will `pop` a decImport off the queue, look up the c-list entry it references, and decrement the c-list import count of that entry. (TODO: under what circumstances could this cause an underflow??). If this causes the import count to reach zero, the kernel deletes the c-list entry, and adds the kernel object ID (`koid`) to the "maybe free" list. (TODO: is the maybe-free list durable?)
+
+The kernel might process the entire `decImport` queue right away, or it might stop after some number of items and continue on to other work (i.e. we need to be conscious of blocking forward progress by spending too much time doing GC work).
+
+After doing some amount of `decImport` work, the kernel might switch over to processing the maybe-free list. This should also happen between deliveries. For each item on the maybe-free list, the kernel removes the entry and then does a GC sweep across all other c-lists, the run-queue (specifically the arguments in queued messages), and any resolved promises whose resolution might reference the kernel object. If (and only iff) the only remaining reference is the c-list which exports the object (i.e. the "owner" of the kernel object), the kernel object is deleted, and a `decExport` is prepared for the exporting vat.
+
+At this point, we might have the kernel deliver the `decExport` right away, or we might queue it for later. If we deliver it right away, the kernel performs the following in an uninterrupted sequence:
+
+* delete the exporting vat's c-list entry
+* invoke `dispatch.dropExport(vref)`
+
+Inside the vat, liveslots responds to the `dropExport` by looking up the object (in the `slotToVal` table, which holds a `WeakRef` to the object), and removing it from the (strong-reference) `exports` Set. That might make the exported object become unreachable, which case it will be GCed by the JS engine in due course. Note that user-level code does not get to sense this transition, because we do not give it access to `WeakRef` or `FinalizationRegistry`, and because `dropExport` does not invoke any user-level code directly, no user-level code can get control during the processing of `dropExport`.
+
+Using an immediate `dropExport` allows us to avoid the need for tracking counters in the export entries: because `dropExport` does not give control to user-level code, it has no opportunity to send outgoing messages which might re-export something we're in the middle of dropping.
+
+If, instead, we enqueue the `decExport` message (on the kernel run-queue), we must prepare for the possibility that the exporting vat emits a new message (containing a new reference to the nearly-dead object) before we finish the process. This requires a pair of counters, one in the kernel-side c-list, and the other in a liveslots `Map` named `exportCount`. (These mirror the two counters we use to track imports). Liveslots must increment its counter each time it makes a syscall (by 1 for each appearance of the object in the arguments), and the kernel must increment the c-list counter each time it translates a syscall's arguments. (For local vat-workers, which share a process with the kernel, these two increments will happen in the same turn, but for vats whose worker lives in a child process, the tables will live in separate processes and will be incremented at slightly different times).
+
+In this mode, the kernel enqueues a `decExport(vatID, vref, count)` message on the run-queue. When this message reaches the top, the kernel will decrement the c-list counter by the given number and only delete the entry if it reaches zero. The 
+
+## Snapshots vs counters
+
+Durable tables vs ephemeral
+
+
+## Deterministic Behavior Across Replicas
+
+
+
+
+* vatA: imported object is reachable
+* delivery is made to vatA, user code runs, object becomes unreachable
+* delivery completes, crank completes
+
+
+
+
+
+## Determinism vs Replicas. Durable vs Ephemeral. Snapshot vs Finalizers.
+
+We have several exciting constraints on this design.
+
+One is that we provide orthogonal persistence to our vats (both liveslots and the user-level code), which means that after a reboot of the host process (or when simply paging in/out an idle vat to save memory) we must be able to rebuild a new vat to an equivalent state as the old vat. GC (in most high-level languages, including JavaScript) is not deterministic, and even if it were, we have so many vats sharing a single engine, it would not be a deterministic function of the activity of a single vat.
+
+When a vat-A Presence becomes unreachable in delivery 10, the finalizer might run during the processing of delivery 10, or maybe between 10 and 11 while some other kernel code allocates memory, or during delivery 12 (which is to vat-B), or after some future vat-A delivery 20. When we reboot and reconstruct the vat by replaying its transcript, the second run might execute the finalizer at a different time. The one thing we can rely upon is that it won't run before delivery 10 (when the delivery's actions caused the Presence to become unreachable), however we have no way to deduce that "10" is the earliest possible point.
+
+The consequence is that, after a replay, we must be prepared to tolerate duplicate `decImport`
+
+The fun part here is that GC is not deterministic. 
+
+## Durable tables vs Ephemeral
+
+The fun part here is that 
+
+## Snapshots vs counters
+
+Durable tables vs ephemeral
+
+
+## Deterministic Behavior Across Replicas
+
+
+
+
+* vatA: imported object is reachable
+* delivery is made to vatA, user code runs, object becomes unreachable
+* delivery completes, crank completes
+
+
+
+vs replay
+
+When we process a decImport, we don't immediately decrement the c-list
+counter. Instead, we *increment* an ephemeral counter: a cumulative
+decrement. We then compare this cumulative decrement against the c-list
+entry, and delete the entry if it matches.
+
+We must do this because we aren't committing the vat heap state at the same
+time as we're committing changes to the c-list (without snapshots, we aren't
+commiting the heap state at all).
+
+TOEXPLAIN: why decrementing the c-list immediately won't work
+
+When we rebuild the vat by replaying the transcript, it may emit decImports
+earlier or later than they were emitted in the earlier run. We know that the
+cumulative decImports will eventually be the same in each run, because the
+change in reachability is driven by transcripted deliveries (messages,
+resolutions, and dropExports). And we know there will be at most the same
+number of imports we remember sending into the vat (recorded in the c-list).
+If, in any run, these numbers match, that means the vat has fully dropped the
+vref, and we can delete it from the c-list.
+
+So:
+
+* during regular operation, we accumulate an ephemeral cumulative decImport
+  counter for each vat+vref pair. These counters start at 0, for both first
+  boot and reboots.
+
+* when processing decImports, as we remove the decImport record from the
+  queue, we increment this counter, and compare it against the c-list to
+  decide whether to delete or not. If the c-list entry is missing, we ignore
+  the decImport. We do not maintain an ephemeral counter for vrefs that don't
+  exist in the c-list. Imagine that the c-list entry contains (kref, vref,
+  importCount, decImport count), except that the first three are durable (in
+  the DB), and the last is ephemeral
+
+* during replay, we process decImports as usual, however we expect a
+  significant number of them to be against deleted c-list entries, and will
+  thus be ignored
+
+TOEXPLAIN: case analysis of the three (two?) possibilities: first boot
+emitted decImport before system shutdown or not (i.e. it would have emitted
+it sometime after, we just shut down too soon), times second boot emits
+decImport during replay or after
+
+each decImport indicates a new Presence bject. the one and only time the counters match indicates a new vref
+
+the only information we get from the old instance is whether the counters
+matched (in which case the clist entry will have been deleted)
+
+
+
+
+
+When taking a snapshot, we have two choices. The first is to reord the
+cumulative-decrement counters along with the snapshot. The artifact thus
+written will capture all phases of a GCed reference. It might be reachable,
+unreachable but not collected, collected but not finalized: in these three
+cases, the heap snapshot will have some record of the object's state, either
+in the original heap or in the finalization queue (which is part of the
+snapshot). The reference might also be fully finalized (the callback has been
+run), in which case the state will be represented by the recorded
+cumulative-decrement counters being one higher.
+
+The second choice is to decrement the c-list entries in the same transaction
+as taking the snapshot. In particular, we need to process the decImport queue
+fully (incrementing the cumulative-decrement counters), perform whatever GC
+we're going to do, subtract the counters from the c-list entries, then record
+both the c-list entries and the snapshot as a unit.
+
+This second option sounds dicey. Do we record the c-list as part of the vat
+snapshot? I think not. And we would need both c-list and vat to be recorded
+at the same time.
+
+What happens to the objects which get collected during this subtraction
+process? They are not yet finalized (and cannot, until a later turn), so the
+callbacks are still sitting on the finalization queue, which will be recorded
+in the snapshot.
+
+On Node, we don't think we can snapshot vats (or Workers) separately, so the
+question is moot.
+
+On XS, each vat runs in its own XSMachine, which has its own heap, and thus
+its own finalization queue. That queue only gets to run when we do something
+with that specific XSMachine. So when we finish talking to a vat, its
+finalizers *can't* run until we talk to it again, bringing us more in line
+with the original "don't speak unless spoken to" rule. That means the vat
+heap state is more stable.
