@@ -40,6 +40,9 @@ const sqlGetRange = ssdb.prepare(
 const sqlGetCurrentSpan = ssdb.prepare(
   'SELECT * FROM transcriptSpans WHERE vatID = ? AND isCurrent=1',
 );
+const sqlGetCurrentSnapshot = ssdb.prepare(
+  'SELECT uncompressedSize FROM snapshots WHERE vatID = ? AND inUse=1',
+).pluck(true);
 
 const idNumber = (prefix, idString) => {
   assert(idString.startsWith(prefix));
@@ -111,11 +114,14 @@ for (const vatID of allVatIDs) {
 
   const { incarnation, endPos } = sqlGetCurrentSpan.get(vatID);
 
+  const snapshotSize = sqlGetCurrentSnapshot.get(vatID)
+
   const vat = {
     name,
     critical,
     incarnation,
     endPos,
+    snapshotSize,
     source,
     type,
     lockdownBundleID,
@@ -129,6 +135,7 @@ for (const vatID of allVatIDs) {
     console.log(` critical: ${critical}`);
     console.log(` incarnation: ${incarnation}`);
     console.log(` endPos: ${endPos}`);
+    console.log(` snapshotSize: ${snapshotSize}`);
     console.log(` source: ${source}`);
     console.log(` worker type: ${type}`);
     console.log(` lockdown: ${lockdownBundleID}`);
